@@ -79,7 +79,13 @@ product=$(body_of "$(api GET '/api/products?size=100')" | jq -r '[.content[] | s
 [[ "$product" != "null" ]] || fail "no affordable product with stock to order"
 before=$(stock_of "$product")
 key="e2e-$(date +%s)-$RANDOM"
-placed=$(api POST /api/orders "$customer" "{\"items\":[{\"productId\":$product,\"quantity\":2}]}" -H "Idempotency-Key: $key")
+# Right after a cold start order-service may not have discovered product-service yet and
+# answers 503. Retrying with the same Idempotency-Key is safe, and what a real client does.
+for _ in $(seq 1 30); do
+  placed=$(api POST /api/orders "$customer" "{\"items\":[{\"productId\":$product,\"quantity\":2}]}" -H "Idempotency-Key: $key")
+  [[ "$(status_of "$placed")" == "503" ]] || break
+  sleep 2
+done
 expect_status "$placed" 201 "order accepted"
 order=$(body_of "$placed" | jq -r .id)
 [[ "$(await_terminal "$order" "$customer")" == "CONFIRMED" ]] || fail "order $order should be CONFIRMED"

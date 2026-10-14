@@ -39,6 +39,11 @@ spring:
       concurrency: 3
       # Extracts the W3C traceparent header so consumer spans join the producer's trace.
       observation-enabled: true
+  cloud:
+    loadbalancer:
+      cache:
+        # Default 35 s: a freshly started service would be unreachable for over half a minute.
+        ttl: 5s
 
 server:
   shutdown: graceful
@@ -49,8 +54,13 @@ eureka:
   client:
     service-url:
       defaultZone: ${EUREKA_URI:http://localhost:8761/eureka/}
+    # Defaults are tuned for large fleets (30 s); a small platform can afford to discover
+    # new and departed instances within seconds.
+    registry-fetch-interval-seconds: 5
   instance:
     prefer-ip-address: true
+    lease-renewal-interval-in-seconds: 10
+    lease-expiration-duration-in-seconds: 30
 
 management:
   endpoints:
