@@ -1,49 +1,115 @@
 server:
   port: 8080
+  # The edge must not let clients rewrite its view of the request via X-Forwarded-* headers;
+  # the rate limiter reads X-Forwarded-For itself, trusting only the nginx hop.
+  forward-headers-strategy: none
+
+management:
+  server:
+    # Actuator lives on its own port, which docker-compose never publishes.
+    port: 9080
 
 spring:
   application:
     name: api-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
   cloud:
     gateway:
-      discovery:
-        locator:
-          enabled: false
-      routes:
-        - id: auth-service
-          uri: lb://auth-service
-          predicates:
-            - Path=/api/auth/**
-        - id: product-service
-          uri: lb://product-service
-          predicates:
-            - Path=/api/products/**
-        - id: order-service
-          uri: lb://order-service
-          predicates:
-            - Path=/api/orders/**
-        - id: payment-service
-          uri: lb://payment-service
-          predicates:
-            - Path=/api/payments/**
-        - id: notification-service
-          uri: lb://notification-service
-          predicates:
-            - Path=/api/notifications/**
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: false
+          routes:
+            - id: auth
+              uri: lb://auth-service
+              predicates:
+                - Path=/api/auth/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 5
+                    redis-rate-limiter.burstCapacity: 10
+                    key-resolver: "#{@clientIpKeyResolver}"
 
-security:
+            - id: products
+              uri: lb://product-service
+              predicates:
+                - Path=/api/products/**
+
+            - id: orders
+              uri: lb://order-service
+              predicates:
+                - Path=/api/orders/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+                    key-resolver: "#{@userKeyResolver}"
+
+            - id: payments
+              uri: lb://payment-service
+              predicates:
+                - Path=/api/payments/**
+
+            - id: notifications
+              uri: lb://notification-service
+              predicates:
+                - Path=/api/notifications/**
+
+            # OpenAPI documents of each service, for the aggregated Swagger UI below.
+            - id: docs-auth
+              uri: lb://auth-service
+              predicates:
+                - Path=/docs/auth
+              filters:
+                - SetPath=/v3/api-docs
+            - id: docs-products
+              uri: lb://product-service
+              predicates:
+                - Path=/docs/products
+              filters:
+                - SetPath=/v3/api-docs
+            - id: docs-orders
+              uri: lb://order-service
+              predicates:
+                - Path=/docs/orders
+              filters:
+                - SetPath=/v3/api-docs
+            - id: docs-payments
+              uri: lb://payment-service
+              predicates:
+                - Path=/docs/payments
+              filters:
+                - SetPath=/v3/api-docs
+            - id: docs-notifications
+              uri: lb://notification-service
+              predicates:
+                - Path=/docs/notifications
+              filters:
+                - SetPath=/v3/api-docs
+
+gateway:
   jwt:
-    secret: ${JWT_SECRET:change-this-dev-only-secret-key-must-be-32-bytes-min}
+    jwk-set-uri: ${JWT_JWK_SET_URI:http://auth-service/.well-known/jwks.json}
+    issuer: ${JWT_ISSUER:http://auth-service}
+    audience: ${JWT_AUDIENCE:ecommerce-api}
 
-eureka:
-  client:
-    service-url:
-      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka/}
-  instance:
-    prefer-ip-address: true
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info,gateway
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    urls:
+      - name: Orders
+        url: /docs/orders
+      - name: Catalog
+        url: /docs/products
+      - name: Payments
+        url: /docs/payments
+      - name: Notifications
+        url: /docs/notifications
+      - name: Authentication
+        url: /docs/auth
