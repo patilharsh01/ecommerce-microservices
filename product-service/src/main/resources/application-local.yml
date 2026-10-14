@@ -1,0 +1,5 @@
+# Activated with --spring.profiles.active=local when running without Docker/Redis.
+# Falls back to an in-memory cache instead of Redis; everything else is unchanged.
+spring:
+  cache:
+    type: simple
