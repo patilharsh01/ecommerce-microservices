@@ -1,6 +1,11 @@
 server:
   port: 8083
 
+management:
+  server:
+    # Actuator on its own port, never published outside the Docker network.
+    port: 9083
+
 spring:
   application:
     name: order-service
@@ -8,43 +13,22 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/orderdb}
     username: ${DB_USERNAME:ecommerce}
     password: ${DB_PASSWORD:ecommerce}
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    properties:
-      hibernate:
-        format_sql: true
-    show-sql: false
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
-    consumer:
-      group-id: order-service
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      properties:
-        spring.json.trusted.packages: "com.harshalpatil.ecommerce.common.event"
-
-feign:
-  client:
-    config:
-      default:
-        connectTimeout: 3000
-        readTimeout: 3000
-
-eureka:
-  client:
-    service-url:
-      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka/}
-  instance:
-    prefer-ip-address: true
-
-management:
-  endpoints:
+  data:
     web:
-      exposure:
-        include: health,info
+      pageable:
+        max-page-size: 100
+
+platform:
+  messaging:
+    topics:
+      - order.saga.replies
+      - inventory.commands
+      - payment.commands
+      - order.events
+
+order:
+  saga:
+    step-timeout: ${ORDER_SAGA_STEP_TIMEOUT:30s}
+    sweep-interval: 5s
+  catalog:
+    base-url: ${CATALOG_BASE_URL:http://product-service}
