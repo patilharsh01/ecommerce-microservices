@@ -1,6 +1,11 @@
 server:
   port: 8081
 
+management:
+  server:
+    # Actuator on its own port, never published outside the Docker network.
+    port: 9081
+
 spring:
   application:
     name: auth-service
@@ -8,29 +13,16 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/authdb}
     username: ${DB_USERNAME:ecommerce}
     password: ${DB_PASSWORD:ecommerce}
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    properties:
-      hibernate:
-        format_sql: true
-    show-sql: false
+  flyway:
+    # No Kafka in this service, so no outbox or inbox tables either.
+    locations:
+      - classpath:db/migration
 
+# Also configurable, without defaults on purpose:
+#   SECURITY_JWT_KEY_DIRECTORY  where the signing key is persisted (unset: in-memory key)
+#   SECURITY_ADMIN_EMAIL / SECURITY_ADMIN_PASSWORD  bootstrap administrator (unset: none)
 security:
   jwt:
-    secret: ${JWT_SECRET:change-this-dev-only-secret-key-must-be-32-bytes-min}
-    expiration-minutes: ${JWT_EXPIRATION_MINUTES:60}
-
-eureka:
-  client:
-    service-url:
-      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka/}
-  instance:
-    prefer-ip-address: true
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info
+    issuer: ${JWT_ISSUER:http://auth-service}
+    audience: ${JWT_AUDIENCE:ecommerce-api}
+    ttl: ${JWT_TTL:60m}
