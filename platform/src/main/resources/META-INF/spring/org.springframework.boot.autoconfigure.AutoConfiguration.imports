@@ -1,0 +1,3 @@
+com.harshalpatil.ecommerce.platform.messaging.MessagingAutoConfiguration
+com.harshalpatil.ecommerce.platform.web.PlatformWebAutoConfiguration
+com.harshalpatil.ecommerce.platform.web.PlatformOpenApiAutoConfiguration
