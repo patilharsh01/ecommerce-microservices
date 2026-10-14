@@ -1,0 +1,58 @@
+groups:
+  - name: order-saga
+    rules:
+      - alert: SagaStuckCompensating
+        expr: max(orders_in_flight{status="COMPENSATING"}) > 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: Orders have been waiting on a compensation for over 5 minutes
+          description: >
+            A participant is not answering ReleaseStock/RefundPayment. Stock or money may be held
+            for cancelled orders. Check inventory/payment consumers and their dead-letter topics.
+
+      - alert: OutboxBacklog
+        expr: max by (application) (outbox_oldest_pending_age_seconds) > 30
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.application }} cannot publish to Kafka"
+          description: The oldest unpublished outbox row is {{ $value | humanizeDuration }} old. Kafka is likely unreachable.
+
+      - alert: OutboxMessagesParked
+        expr: max by (application) (outbox_messages_parked) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.application }} parked outbox messages after repeated publish failures"
+          description: >
+            Later messages for the same order wait behind them. Check last_error in outbox_messages,
+            fix the cause, then reset attempts to 0 to release them.
+
+      - alert: MessagesDeadLettered
+        expr: sum by (application, topic) (increase(messaging_dead_letters_total[10m])) > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.application }} dead-lettered messages from {{ $labels.topic }}"
+          description: Inspect {{ $labels.topic }}.DLT; the affected orders will time out and be compensated.
+
+      - alert: HighCancellationRate
+        expr: >
+          sum(increase(orders_completed_total{outcome="cancelled", cause!="customer_request"}[15m]))
+            / clamp_min(sum(increase(orders_completed_total[15m])), 1) > 0.5
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: More than half of recent orders were cancelled by the system
+
+      - alert: CatalogCircuitOpen
+        expr: max(resilience4j_circuitbreaker_state{name="catalog", state="open"}) == 1
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: order-service stopped calling product-service (circuit open); new orders get 503

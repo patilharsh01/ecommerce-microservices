@@ -1,188 +1,330 @@
-version: "3.9"
+# Whole platform with one command:   docker compose up -d --build --wait
+#
+#   Shop & admin dashboard  http://localhost:3000
+#   API gateway + Swagger   http://localhost:8080/swagger-ui.html
+#   Eureka                  http://localhost:8761
+#   Grafana                 http://localhost:3001   (dashboard "Order Saga Overview")
+#   Jaeger                  http://localhost:16686
+#   Prometheus              http://localhost:9090
+#   Kafka UI (optional)     docker compose --profile tools up -d kafka-ui  ->  http://localhost:8090
+#
+# Only the gateway, the UI and the dev tooling publish ports. The services themselves are
+# reachable only inside this network, which is what lets them trust the gateway's identity headers.
+
+name: ecommerce
+
+x-java-service: &java-service
+  restart: unless-stopped
+  mem_limit: 640m
+  depends_on: &java-dependencies
+    discovery-server:
+      condition: service_healthy
+  networks: [backend]
+
+x-java-environment: &java-environment
+  EUREKA_URI: http://discovery-server:8761/eureka/
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
+  # Structured JSON logs (Elastic Common Schema) with traceId/spanId on every line.
+  LOGGING_STRUCTURED_FORMAT_CONSOLE: ecs
 
 services:
 
+  # ---------------------------------------------------------------- infrastructure
+
   postgres:
-    image: postgres:16-alpine
-    container_name: ecommerce-postgres
+    image: postgres:17-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ecommerce
-      POSTGRES_PASSWORD: ecommerce
-      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./docker/postgres/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ecommerce"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+    networks: [backend]
+
+  kafka:
+    image: apache/kafka:4.1.2
+    restart: unless-stopped
+    environment:
+      # Single-node KRaft: no ZooKeeper.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:29093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are declared by the services (with matching .DLT topics); typos fail loudly.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+    networks: [backend]
 
   redis:
-    image: redis:7-alpine
-    container_name: ecommerce-redis
+    image: redis:7.4-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+    networks: [backend]
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
-    container_name: ecommerce-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-
-  kafka:
-    image: confluentinc/cp-kafka:7.6.0
-    container_name: ecommerce-kafka
-    depends_on:
-      - zookeeper
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-    healthcheck:
-      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
+  # ---------------------------------------------------------------- platform services
 
   discovery-server:
-    build:
+    build: &build
       context: .
-      dockerfile: discovery-server/Dockerfile
-    container_name: discovery-server
+      args:
+        SERVICE: discovery-server
+    image: ecommerce/discovery-server:2.0.0
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      EUREKA_HOSTNAME: discovery-server
     ports:
       - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [backend]
 
   api-gateway:
+    <<: *java-service
     build:
-      context: .
-      dockerfile: api-gateway/Dockerfile
-    container_name: api-gateway
+      <<: *build
+      args:
+        SERVICE: api-gateway
+    image: ecommerce/api-gateway:2.0.0
     depends_on:
-      - discovery-server
-    environment:
-      EUREKA_URI: http://discovery-server:8761/eureka/
-      JWT_SECRET: ${JWT_SECRET:-change-this-dev-only-secret-key-must-be-32-bytes-min}
-    ports:
-      - "8080:8080"
-
-  auth-service:
-    build:
-      context: .
-      dockerfile: auth-service/Dockerfile
-    container_name: auth-service
-    depends_on:
-      postgres:
-        condition: service_healthy
-      discovery-server:
-        condition: service_started
-    environment:
-      EUREKA_URI: http://discovery-server:8761/eureka/
-      DB_URL: jdbc:postgresql://postgres:5432/authdb
-      DB_USERNAME: ecommerce
-      DB_PASSWORD: ecommerce
-      JWT_SECRET: ${JWT_SECRET:-change-this-dev-only-secret-key-must-be-32-bytes-min}
-    ports:
-      - "8081:8081"
-
-  product-service:
-    build:
-      context: .
-      dockerfile: product-service/Dockerfile
-    container_name: product-service
-    depends_on:
-      postgres:
-        condition: service_healthy
+      <<: *java-dependencies
       redis:
         condition: service_healthy
+    environment:
+      <<: *java-environment
+      REDIS_HOST: redis
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9080/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  auth-service:
+    <<: *java-service
+    build:
+      <<: *build
+      args:
+        SERVICE: auth-service
+    image: ecommerce/auth-service:2.0.0
+    depends_on:
+      <<: *java-dependencies
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *java-environment
+      DB_URL: jdbc:postgresql://postgres:5432/authdb
+      DB_USERNAME: auth_service
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:-auth_service}
+      SECURITY_JWT_KEY_DIRECTORY: /app/data/jwt
+      SECURITY_ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@shop.local}
+      SECURITY_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+    volumes:
+      # Keeps the JWT signing key across restarts, so signed-in users stay signed in.
+      - auth-keys:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9081/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  product-service:
+    <<: *java-service
+    build:
+      <<: *build
+      args:
+        SERVICE: product-service
+    image: ecommerce/product-service:2.0.0
+    depends_on: &data-service-dependencies
+      <<: *java-dependencies
+      postgres:
+        condition: service_healthy
       kafka:
         condition: service_healthy
-      discovery-server:
-        condition: service_started
     environment:
-      EUREKA_URI: http://discovery-server:8761/eureka/
+      <<: *java-environment
       DB_URL: jdbc:postgresql://postgres:5432/productdb
-      DB_USERNAME: ecommerce
-      DB_PASSWORD: ecommerce
+      DB_USERNAME: product_service
+      DB_PASSWORD: ${PRODUCT_DB_PASSWORD:-product_service}
       REDIS_HOST: redis
-      REDIS_PORT: 6379
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-    ports:
-      - "8082:8082"
+      CATALOG_DEMO_DATA: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9082/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   order-service:
+    <<: *java-service
     build:
-      context: .
-      dockerfile: order-service/Dockerfile
-    container_name: order-service
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      discovery-server:
-        condition: service_started
+      <<: *build
+      args:
+        SERVICE: order-service
+    image: ecommerce/order-service:2.0.0
+    depends_on: *data-service-dependencies
     environment:
-      EUREKA_URI: http://discovery-server:8761/eureka/
+      <<: *java-environment
       DB_URL: jdbc:postgresql://postgres:5432/orderdb
-      DB_USERNAME: ecommerce
-      DB_PASSWORD: ecommerce
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-    ports:
-      - "8083:8083"
+      DB_USERNAME: order_service
+      DB_PASSWORD: ${ORDER_DB_PASSWORD:-order_service}
+      ORDER_SAGA_STEP_TIMEOUT: ${ORDER_SAGA_STEP_TIMEOUT:-30s}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9083/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   payment-service:
+    <<: *java-service
     build:
-      context: .
-      dockerfile: payment-service/Dockerfile
-    container_name: payment-service
-    depends_on:
-      postgres:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-      discovery-server:
-        condition: service_started
+      <<: *build
+      args:
+        SERVICE: payment-service
+    image: ecommerce/payment-service:2.0.0
+    depends_on: *data-service-dependencies
     environment:
-      EUREKA_URI: http://discovery-server:8761/eureka/
+      <<: *java-environment
       DB_URL: jdbc:postgresql://postgres:5432/paymentdb
-      DB_USERNAME: ecommerce
-      DB_PASSWORD: ecommerce
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      PAYMENT_MAX_AMOUNT: 50000
-    ports:
-      - "8084:8084"
+      DB_USERNAME: payment_service
+      DB_PASSWORD: ${PAYMENT_DB_PASSWORD:-payment_service}
+      PAYMENT_APPROVAL_LIMIT: ${PAYMENT_APPROVAL_LIMIT:-50000}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9084/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   notification-service:
+    <<: *java-service
     build:
-      context: .
-      dockerfile: notification-service/Dockerfile
-    container_name: notification-service
+      <<: *build
+      args:
+        SERVICE: notification-service
+    image: ecommerce/notification-service:2.0.0
+    depends_on: *data-service-dependencies
+    environment:
+      <<: *java-environment
+      DB_URL: jdbc:postgresql://postgres:5432/notificationdb
+      DB_USERNAME: notification_service
+      DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:-notification_service}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9085/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+    image: ecommerce/frontend:2.0.0
+    restart: unless-stopped
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [backend]
+
+  # ---------------------------------------------------------------- observability
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+    networks: [backend]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    restart: unless-stopped
+    depends_on: [prometheus, jaeger]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/order-saga.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    networks: [backend]
+
+  jaeger:
+    image: jaegertracing/jaeger:2.9.0
+    restart: unless-stopped
+    ports:
+      - "16686:16686"
+    networks: [backend]
+
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.3.0
+    profiles: [tools]
     depends_on:
       kafka:
         condition: service_healthy
-      discovery-server:
-        condition: service_started
     environment:
-      EUREKA_URI: http://discovery-server:8761/eureka/
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
     ports:
-      - "8085:8085"
+      - "8090:8080"
+    networks: [backend]
+
+networks:
+  backend:
 
 volumes:
   postgres-data:
+  auth-keys:

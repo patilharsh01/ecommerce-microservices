@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Actuator runs on a separate management port in every service (never published outside Docker).
+  - job_name: services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - api-gateway:9080
+          - auth-service:9081
+          - product-service:9082
+          - order-service:9083
+          - payment-service:9084
+          - notification-service:9085

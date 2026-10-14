@@ -1,0 +1,13 @@
+**/target
+**/node_modules
+**/.idea
+**/*.iml
+.git
+.github
+.vscode
+frontend
+load-test/results
+docs
+*.md
+!README.md
+.env
