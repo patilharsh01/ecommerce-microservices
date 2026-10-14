@@ -19,7 +19,9 @@ import org.testcontainers.utility.DockerImageName;
 public class TestContainersConfiguration {
 
     public static final DockerImageName POSTGRES = DockerImageName.parse("postgres:17-alpine");
-    public static final DockerImageName KAFKA = DockerImageName.parse("apache/kafka-native:4.1.2");
+    // The JVM image, same as docker-compose: the GraalVM kafka-native image occasionally hangs
+    // in KRaft recovery on CI runners.
+    public static final DockerImageName KAFKA = DockerImageName.parse("apache/kafka:4.1.2");
 
     @Bean
     @ServiceConnection
