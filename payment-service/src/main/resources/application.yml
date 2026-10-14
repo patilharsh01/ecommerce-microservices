@@ -1,6 +1,11 @@
 server:
   port: 8084
 
+management:
+  server:
+    # Actuator on its own port, never published outside the Docker network.
+    port: 9084
+
 spring:
   application:
     name: payment-service
@@ -8,40 +13,24 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:5432/paymentdb}
     username: ${DB_USERNAME:ecommerce}
     password: ${DB_PASSWORD:ecommerce}
-    driver-class-name: org.postgresql.Driver
-  jpa:
-    hibernate:
-      ddl-auto: update
-    properties:
-      hibernate:
-        format_sql: true
-    show-sql: false
+  data:
+    web:
+      pageable:
+        max-page-size: 100
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
     consumer:
-      group-id: payment-service
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
-        spring.json.trusted.packages: "com.harshalpatil.ecommerce.common.event"
+        # The simulated gateway can be told to stall for up to a minute; leave headroom.
+        max.poll.interval.ms: 600000
+
+platform:
+  messaging:
+    topics:
+      - payment.commands
+      - order.saga.replies
 
 payment:
   simulation:
-    max-approved-amount: ${PAYMENT_MAX_AMOUNT:50000}
-
-eureka:
-  client:
-    service-url:
-      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka/}
-  instance:
-    prefer-ip-address: true
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health,info
+    mode: ${PAYMENT_SIMULATION_MODE:APPROVE_UNDER_LIMIT}
+    approval-limit: ${PAYMENT_APPROVAL_LIMIT:50000}
+    latency-ms: ${PAYMENT_LATENCY_MS:0}
