@@ -1,28 +1,31 @@
 server:
   port: 8085
 
+management:
+  server:
+    # Actuator on its own port, never published outside the Docker network.
+    port: 9085
+
 spring:
   application:
     name: notification-service
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    consumer:
-      group-id: notification-service
-      auto-offset-reset: earliest
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
-      properties:
-        spring.json.trusted.packages: "com.harshalpatil.ecommerce.common.event"
-
-eureka:
-  client:
-    service-url:
-      defaultZone: ${EUREKA_URI:http://localhost:8761/eureka/}
-  instance:
-    prefer-ip-address: true
-
-management:
-  endpoints:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/notificationdb}
+    username: ${DB_USERNAME:ecommerce}
+    password: ${DB_PASSWORD:ecommerce}
+  flyway:
+    # Consumer only: needs the inbox table, not the outbox.
+    locations:
+      - classpath:db/migration
+      - classpath:db/platform/inbox
+  data:
     web:
-      exposure:
-        include: health,info
+      pageable:
+        max-page-size: 100
+
+platform:
+  messaging:
+    outbox:
+      enabled: false
+    topics:
+      - order.events
